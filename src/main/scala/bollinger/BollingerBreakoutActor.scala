@@ -1,24 +1,23 @@
 package bollinger
 
-import akka.actor.Actor
-import akka.actor.{ ActorRef, FSM }
+import akka.actor.{Props, Actor, ActorRef, FSM}
 import org.apache.commons.math.stat.descriptive.{DescriptiveStatistics, SummaryStatistics}
 import org.apache.logging.log4j.LogManager
 import org.joda.time.LocalDate
 
-sealed trait State
-object CLOSED extends State
-object HIGH_CROSSED extends State
-object LOW_CROSSED extends State
+sealed trait BollingerState
+object CLOSED extends BollingerState
+object HIGH_CROSSED extends BollingerState
+object LOW_CROSSED extends BollingerState
 
 case class PriceData(date: LocalDate, open: Double, low: Double, high: Double, close: Double)
 case class BollingerBand(low: Double, mean: Double, high: Double)
-case class BollingerEvent(price: PriceData, event: State)
+case class BollingerEvent(price: PriceData, event: BollingerState)
 
 /**
  * Created by vince on 11/04/15.
  */
-class BollingerBreakoutActor(window: Int, width: Double, listener: BollingerEventHandler) extends FSM[State, PriceData]{
+class BollingerBreakoutActor(window: Int, width: Double, listener: BollingerEventHandler) extends FSM[BollingerState, PriceData]{
 
   val logger = LogManager.getLogger(classOf[BollingerBreakoutActor]);
 
@@ -32,8 +31,7 @@ class BollingerBreakoutActor(window: Int, width: Double, listener: BollingerEven
   when(CLOSED) {
     case Event(p: PriceData, _) => {
 
-      stats.addValue(p.close)
-      calculateBollinger
+      calculateBollinger(p)
 
       bollinger.map{ b =>
         if(p.close > b.high) goto(HIGH_CROSSED) using p
@@ -45,6 +43,8 @@ class BollingerBreakoutActor(window: Int, width: Double, listener: BollingerEven
 
   when(HIGH_CROSSED){
     case Event(p: PriceData, _) => {
+      calculateBollinger(p)
+
       if(p.close < bollinger.get.mean) goto(CLOSED) using p
       else stay() using p
     }
@@ -52,28 +52,42 @@ class BollingerBreakoutActor(window: Int, width: Double, listener: BollingerEven
 
   when(LOW_CROSSED){
     case Event(p: PriceData, _) => {
+      calculateBollinger(p)
+
       if(p.close > bollinger.get.mean) goto(CLOSED) using p
       else stay() using p
     }
   }
 
   onTransition{
-    case CLOSED -> HIGH_CROSSED => listener.handle(HIGH_CROSSED, stateData)
-    case CLOSED -> LOW_CROSSED => listener.handle(LOW_CROSSED, stateData)
-    case _ -> CLOSED => listener.handle(CLOSED, stateData)
+    case CLOSED -> HIGH_CROSSED => notify(HIGH_CROSSED, stateData)
+    case CLOSED -> LOW_CROSSED => notify(LOW_CROSSED, stateData)
+    case _ -> CLOSED => notify(CLOSED, stateData)
   }
 
-  def calculateBollinger = {
-    if(stats.getN >= window){
+  def calculateBollinger(p: PriceData) = {
+    stats.addValue(p.close)
+
+    if (stats.getN >= window) {
       val stddev = stats.getStandardDeviation
       val mean = stats.getMean
 
-      bollinger = Some( BollingerBand(mean - width * stddev, mean, mean + width * stddev) )
+      bollinger = Some(BollingerBand(mean - width * stddev, mean, mean + width * stddev))
     }
   }
+  
+  def notify(state: BollingerState, price: PriceData) = try{
+    listener.handle(state, price)
+  } catch {
+    case t:Throwable => t.printStackTrace()
+  }
+}
 
+object BollingerBreakoutActor{
+
+  def props(window: Int, width: Double, listener: BollingerEventHandler) = Props( new BollingerBreakoutActor(window, width, listener) )
 }
 
 trait BollingerEventHandler{
-  def handle(event: State, price: PriceData)
+  def handle(event: BollingerState, price: PriceData)
 }
