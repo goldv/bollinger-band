@@ -1,1 +1,1 @@
-# bollinger-band
+Basic bollinger band implementation.band
