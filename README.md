@@ -1,1 +1,1 @@
-Basic bollinger band implementation.band
+Basic bollinger band implementation.
